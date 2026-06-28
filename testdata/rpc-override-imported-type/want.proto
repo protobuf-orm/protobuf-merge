@@ -1,0 +1,13 @@
+edition = "2023";
+package sample;
+
+import "other/types.proto";
+
+service FooService {
+  rpc Get(other.GetRequest) returns (GetResult);
+}
+
+message GetResult {
+  uint64 id = 1;
+  string name = 2;
+}

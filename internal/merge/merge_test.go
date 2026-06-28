@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/protobuf-orm/protobuf-merge/internal/protoast"
@@ -95,6 +96,34 @@ func TestGolden(t *testing.T) {
 				t.Errorf("merge is not idempotent\n--- once ---\n%s\n--- twice ---\n%s", got, again)
 			}
 		})
+	}
+}
+
+// TestImportedRPCTypeNotRedefined verifies that when an rpc whose request or
+// response is an imported message is overwritten, the imported message is not
+// emitted as a local definition and the import clause is preserved. The inputs
+// and expected output live in testdata/rpc-override-imported-type/.
+func TestImportedRPCTypeNotRedefined(t *testing.T) {
+	a, b := readCase(t, "rpc-override-imported-type")
+	out, err := Merge("a.proto", a, "b.proto", b, Options{})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	got := string(out)
+
+	// The import clause survives.
+	if !strings.Contains(got, `import "other/types.proto";`) {
+		t.Errorf("import clause was dropped:\n%s", got)
+	}
+	// The imported request is kept on the overwritten rpc (via `_`).
+	if !strings.Contains(got, "rpc Get(other.GetRequest) returns (GetResult)") {
+		t.Errorf("overwritten rpc does not keep the imported request:\n%s", got)
+	}
+	// Neither imported message is re-defined locally.
+	for _, redef := range []string{"message GetRequest", "message GetResponse"} {
+		if strings.Contains(got, redef) {
+			t.Errorf("imported type was redefined (%q):\n%s", redef, got)
+		}
 	}
 }
 

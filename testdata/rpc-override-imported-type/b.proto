@@ -1,0 +1,11 @@
+// Overwrite Get: keep the imported request via `_`, return a new local message.
+// The imported request/response types must NOT be redefined, and the import
+// clause must be preserved.
+service FooService {
+  rpc Get(_) returns (GetResult);
+}
+
+message GetResult {
+  uint64 id = 1;
+  string name = 2;
+}
