@@ -1,0 +1,6 @@
+import "sample/y.proto";
+import "sample/x.proto";
+
+message Foo {
+  string name = 2;
+}

@@ -18,16 +18,57 @@ import (
 
 	"github.com/bufbuild/protocompile/ast"
 
+	"github.com/protobuf-orm/protobuf-merge/internal/format"
 	"github.com/protobuf-orm/protobuf-merge/internal/protoast"
 )
 
 // Options configures a merge.
 type Options struct {
-	// Strict makes Merge return an error when B redefines an A element
-	// incompatibly (field number reused with a different name/type, rpc
-	// signature change, package/edition mismatch) instead of silently
-	// letting B win.
+	// Strict makes Merge return an error when the overlay redefines a base
+	// element incompatibly (field number reused with a different name/type,
+	// rpc signature change, edition mismatch) instead of silently letting the
+	// overlay win.
 	Strict bool
+	// Compact uses the formatter's dynamic layout (short bodies inline)
+	// instead of the default buf-compatible layout.
+	Compact bool
+}
+
+// Merge parses base a and overlay b, merges b onto a, and returns formatted
+// merged source. a_name/b_name are used for diagnostics only. The overlay may
+// be an incomplete fragment (no header, unresolved type references).
+func Merge(a_name string, a []byte, b_name string, b []byte, opts Options) ([]byte, error) {
+	af, err := protoast.Parse(a_name, string(a))
+	if err != nil {
+		return nil, err
+	}
+	bf, err := protoast.Parse(b_name, string(b))
+	if err != nil {
+		return nil, err
+	}
+
+	assembled, conflicts := build(af, bf, opts)
+	if opts.Strict && len(conflicts) > 0 {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("merge: %d strict conflict(s):", len(conflicts)))
+		for _, c := range conflicts {
+			sb.WriteString("\n  - ")
+			sb.WriteString(c.String())
+		}
+		return nil, fmt.Errorf("%s", sb.String())
+	}
+
+	style := format.Legacy
+	if opts.Compact {
+		style = format.Compact
+	}
+	// Use a neutral name: the assembled text spans both inputs, so a format
+	// error must not be blamed on the base file specifically.
+	out, err := format.Format("<merged>", assembled, style)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
 }
 
 // Conflict describes an incompatible redefinition detected during the merge.
@@ -42,10 +83,9 @@ func (c Conflict) String() string {
 	return fmt.Sprintf("%s: %s (%s) at %s", c.Kind, c.Name, c.Detail, c.Pos)
 }
 
-// Merge merges b onto a and returns assembled (unformatted) merged source plus
-// any conflicts detected. The caller is expected to run the result through the
-// formatter.
-func Merge(a, b *protoast.File, opts Options) (string, []Conflict) {
+// build merges b onto a and returns assembled (unformatted) merged source plus
+// any conflicts detected. The result must be run through the formatter.
+func build(a, b *protoast.File, opts Options) (string, []Conflict) {
 	m := &merger{a: a, b: b, opts: opts}
 	return m.file(), m.conflicts
 }
@@ -101,7 +141,23 @@ func (m *merger) file() string {
 	return sb.String()
 }
 
-// topLevel merges the message/enum/service/extend declarations.
+// regEntry is a merged top-level message/enum with the names its fields
+// reference (used to pull referenced messages in right after their referrer).
+type regEntry struct {
+	text string
+	refs []string
+}
+
+// topLevel merges and orders the top-level declarations. Services are emitted
+// first (base order, then overlay-only). Messages and enums are then ordered:
+//   - for each rpc, its request and response are emitted consecutively (unless
+//     one was already emitted), each followed by the messages its fields
+//     reference, transitively; then
+//   - any remaining base messages/enums in source order, each followed by what
+//     it references; then
+//   - any remaining overlay-only messages/enums, likewise.
+//
+// Extend blocks are appended last (base, then overlay-only).
 func (m *merger) topLevel() []string {
 	b_msg := map[string]*ast.MessageNode{}
 	b_enum := map[string]*ast.EnumNode{}
@@ -117,45 +173,228 @@ func (m *merger) topLevel() []string {
 		}
 	}
 
+	reg := map[string]*regEntry{}
+	var a_order, b_order []string
+	addEntry := func(nm, text string, refs []string, fromB bool) {
+		if nm == "" || reg[nm] != nil {
+			return
+		}
+		reg[nm] = &regEntry{text: text, refs: refs}
+		if fromB {
+			b_order = append(b_order, nm)
+		} else {
+			a_order = append(a_order, nm)
+		}
+	}
+
 	consumed := map[ast.Node]bool{}
-	var blocks []string
+	var svc_blocks, extend_blocks []string
+	var rpc_pairs [][2]string
+
 	for _, d := range m.a.Node.Decls {
 		switch n := d.(type) {
 		case *ast.MessageNode:
-			if bn, ok := b_msg[name(n.Name)]; ok {
+			nm := name(n.Name)
+			if bn, ok := b_msg[nm]; ok {
 				consumed[bn] = true
-				blocks = append(blocks, m.message(n, bn))
+				refs := append(referencedNames(m.a, n), referencedNames(m.b, bn)...)
+				addEntry(nm, m.message(n, bn), refs, false)
 			} else {
-				blocks = append(blocks, m.a.LeadingAndText(n))
+				addEntry(nm, m.a.LeadingAndText(n), referencedNames(m.a, n), false)
 			}
 		case *ast.EnumNode:
-			if bn, ok := b_enum[name(n.Name)]; ok {
+			nm := name(n.Name)
+			if bn, ok := b_enum[nm]; ok {
 				consumed[bn] = true
-				blocks = append(blocks, m.enum(n, bn))
+				addEntry(nm, m.enum(n, bn), nil, false)
 			} else {
-				blocks = append(blocks, m.a.LeadingAndText(n))
+				addEntry(nm, m.a.LeadingAndText(n), nil, false)
 			}
 		case *ast.ServiceNode:
 			if bn, ok := b_svc[name(n.Name)]; ok {
 				consumed[bn] = true
-				blocks = append(blocks, m.service(n, bn))
+				svc_blocks = append(svc_blocks, m.service(n, bn))
+				rpc_pairs = append(rpc_pairs, m.rpcPairs(n, bn)...)
 			} else {
-				blocks = append(blocks, m.a.LeadingAndText(n))
+				svc_blocks = append(svc_blocks, m.a.LeadingAndText(n))
+				rpc_pairs = append(rpc_pairs, m.rpcPairs(n, nil)...)
 			}
 		case *ast.ExtendNode:
-			blocks = append(blocks, m.a.LeadingAndText(n))
+			extend_blocks = append(extend_blocks, m.a.LeadingAndText(n))
 		}
 	}
 	for _, d := range m.b.Node.Decls {
 		if consumed[d] {
 			continue
 		}
-		switch d.(type) {
-		case *ast.MessageNode, *ast.EnumNode, *ast.ServiceNode, *ast.ExtendNode:
-			blocks = append(blocks, m.b.LeadingAndText(d))
+		switch n := d.(type) {
+		case *ast.MessageNode:
+			addEntry(name(n.Name), m.b.LeadingAndText(n), referencedNames(m.b, n), true)
+		case *ast.EnumNode:
+			addEntry(name(n.Name), m.b.LeadingAndText(n), nil, true)
+		case *ast.ServiceNode:
+			svc_blocks = append(svc_blocks, m.b.LeadingAndText(n))
+			rpc_pairs = append(rpc_pairs, m.rpcPairs(nil, n)...)
+		case *ast.ExtendNode:
+			extend_blocks = append(extend_blocks, m.b.LeadingAndText(n))
 		}
 	}
-	return blocks
+
+	emitted := map[string]bool{}
+	var order []string
+	var emitMsg func(nm string)
+	emitMsg = func(nm string) {
+		e := reg[nm]
+		if e == nil || emitted[nm] {
+			return
+		}
+		emitted[nm] = true
+		order = append(order, nm)
+		for _, ref := range e.refs {
+			emitMsg(ref)
+		}
+	}
+	for _, p := range rpc_pairs {
+		req, res := p[0], p[1]
+		req_new := reg[req] != nil && !emitted[req]
+		res_new := reg[res] != nil && !emitted[res]
+		if req_new {
+			emitted[req] = true
+			order = append(order, req)
+		}
+		if res_new {
+			emitted[res] = true
+			order = append(order, res)
+		}
+		if req_new {
+			for _, ref := range reg[req].refs {
+				emitMsg(ref)
+			}
+		}
+		if res_new {
+			for _, ref := range reg[res].refs {
+				emitMsg(ref)
+			}
+		}
+	}
+	for _, nm := range a_order {
+		emitMsg(nm)
+	}
+	for _, nm := range b_order {
+		emitMsg(nm)
+	}
+
+	blocks := svc_blocks
+	for _, nm := range order {
+		blocks = append(blocks, reg[nm].text)
+	}
+	return append(blocks, extend_blocks...)
+}
+
+// referencedNames returns the type names referenced by msg's fields (including
+// fields inside oneofs, map value types, and nested messages), in first-seen
+// order. Scalar type names are included but harmlessly ignored by the caller,
+// which only follows names that resolve to a top-level message/enum.
+func referencedNames(f *protoast.File, msg *ast.MessageNode) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(t string) {
+		t = strings.TrimSpace(t)
+		if t != "" && !seen[t] {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	var walk func(decls []ast.MessageElement)
+	walk = func(decls []ast.MessageElement) {
+		for _, el := range decls {
+			switch n := el.(type) {
+			case *ast.FieldNode:
+				if n.FldType != nil {
+					add(f.Text(n.FldType))
+				}
+			case *ast.MapFieldNode:
+				if n.MapType != nil && n.MapType.ValueType != nil {
+					add(f.Text(n.MapType.ValueType))
+				}
+			case *ast.OneofNode:
+				for _, oe := range n.Decls {
+					if fld, ok := oe.(*ast.FieldNode); ok && fld.FldType != nil {
+						add(f.Text(fld.FldType))
+					}
+				}
+			case *ast.MessageNode:
+				walk(n.Decls)
+			}
+		}
+	}
+	walk(msg.Decls)
+	return out
+}
+
+// rpcPairs returns the (request, response) message-name pairs of the merged
+// service in emission order: base rpcs (with overlay overrides resolved, incl.
+// `_`), then overlay-only rpcs. Either service node may be nil.
+func (m *merger) rpcPairs(a_svc, b_svc *ast.ServiceNode) [][2]string {
+	b_rpc := map[string]*ast.RPCNode{}
+	if b_svc != nil {
+		for _, el := range b_svc.Decls {
+			if r, ok := el.(*ast.RPCNode); ok {
+				b_rpc[name(r.Name)] = r
+			}
+		}
+	}
+	done := map[string]bool{}
+	var pairs [][2]string
+	if a_svc != nil {
+		for _, el := range a_svc.Decls {
+			r, ok := el.(*ast.RPCNode)
+			if !ok {
+				continue
+			}
+			if br, ok := b_rpc[name(r.Name)]; ok {
+				done[name(r.Name)] = true
+				pairs = append(pairs, [2]string{m.rpcTypeName(r.Input, br.Input), m.rpcTypeName(r.Output, br.Output)})
+			} else {
+				pairs = append(pairs, [2]string{m.aTypeName(r.Input), m.aTypeName(r.Output)})
+			}
+		}
+	}
+	if b_svc != nil {
+		for _, el := range b_svc.Decls {
+			r, ok := el.(*ast.RPCNode)
+			if !ok || done[name(r.Name)] {
+				continue
+			}
+			pairs = append(pairs, [2]string{m.bTypeName(r.Input), m.bTypeName(r.Output)})
+		}
+	}
+	return pairs
+}
+
+func (m *merger) aTypeName(t *ast.RPCTypeNode) string {
+	if t != nil && t.MessageType != nil {
+		return strings.TrimSpace(m.a.Text(t.MessageType))
+	}
+	return ""
+}
+
+func (m *merger) bTypeName(t *ast.RPCTypeNode) string {
+	if t != nil && t.MessageType != nil {
+		return strings.TrimSpace(m.b.Text(t.MessageType))
+	}
+	return ""
+}
+
+// rpcTypeName resolves the effective request/response name when base rpc type
+// a_type is overridden by overlay b_type: `_` keeps the base, else the overlay.
+func (m *merger) rpcTypeName(a_type, b_type *ast.RPCTypeNode) string {
+	if b_type != nil && b_type.MessageType != nil {
+		if t := strings.TrimSpace(m.b.Text(b_type.MessageType)); t != "_" {
+			return t
+		}
+	}
+	return m.aTypeName(a_type)
 }
 
 // message merges B's message body onto A's.
@@ -189,14 +428,14 @@ func (m *merger) message(a, b *ast.MessageNode) string {
 			if bel, ok := matchField(b_field_num, b_field_name, consumed, n.Tag, n.Name); ok {
 				consumed[bel] = true
 				m.checkField(n, bel)
-				emit(m.b.LeadingAndText(bel))
+				emit(m.overrideField(name(n.Name), bel))
 			} else {
 				emit(m.a.LeadingAndText(n))
 			}
 		case *ast.MapFieldNode:
 			if bel, ok := matchField(b_field_num, b_field_name, consumed, n.Tag, n.Name); ok {
 				consumed[bel] = true
-				emit(m.b.LeadingAndText(bel))
+				emit(m.overrideField(name(n.Name), bel))
 			} else {
 				emit(m.a.LeadingAndText(n))
 			}
@@ -226,12 +465,17 @@ func (m *merger) message(a, b *ast.MessageNode) string {
 			emit(m.a.LeadingAndText(el))
 		}
 	}
+	a_opts := optionKeysOf(m.a, a.Decls)
 	for _, el := range b.Decls {
 		if consumed[el] {
 			continue
 		}
-		switch el.(type) {
-		case *ast.FieldNode, *ast.MapFieldNode, *ast.OneofNode, *ast.MessageNode, *ast.EnumNode, *ast.OptionNode:
+		switch e := el.(type) {
+		case *ast.OptionNode:
+			if !a_opts[optionKey(m.b, e)] {
+				emit(m.b.LeadingAndText(e))
+			}
+		case *ast.FieldNode, *ast.MapFieldNode, *ast.OneofNode, *ast.MessageNode, *ast.EnumNode:
 			emit(m.b.LeadingAndText(el))
 		}
 	}
@@ -257,18 +501,23 @@ func (m *merger) oneof(a, b *ast.OneofNode) string {
 			if bel, ok := matchField(b_field_num, b_field_name, consumed, f.Tag, f.Name); ok {
 				consumed[bel] = true
 				m.checkField(f, bel)
-				emit(m.b.LeadingAndText(bel))
+				emit(m.overrideField(name(f.Name), bel))
 				continue
 			}
 		}
 		emit(m.a.LeadingAndText(el))
 	}
+	a_opts := optionKeysOf(m.a, a.Decls)
 	for _, el := range b.Decls {
 		if consumed[el] {
 			continue
 		}
-		switch el.(type) {
-		case *ast.FieldNode, *ast.OptionNode:
+		switch e := el.(type) {
+		case *ast.OptionNode:
+			if !a_opts[optionKey(m.b, e)] {
+				emit(m.b.LeadingAndText(e))
+			}
+		case *ast.FieldNode:
 			emit(m.b.LeadingAndText(el))
 		}
 	}
@@ -299,12 +548,17 @@ func (m *merger) enum(a, b *ast.EnumNode) string {
 		}
 		emit(m.a.LeadingAndText(el))
 	}
+	a_opts := optionKeysOf(m.a, a.Decls)
 	for _, el := range b.Decls {
 		if consumed[el] {
 			continue
 		}
-		switch el.(type) {
-		case *ast.EnumValueNode, *ast.OptionNode:
+		switch e := el.(type) {
+		case *ast.OptionNode:
+			if !a_opts[optionKey(m.b, e)] {
+				emit(m.b.LeadingAndText(e))
+			}
+		case *ast.EnumValueNode:
 			emit(m.b.LeadingAndText(el))
 		}
 	}
@@ -329,19 +583,23 @@ func (m *merger) service(a, b *ast.ServiceNode) string {
 		if r, ok := el.(*ast.RPCNode); ok {
 			if br, ok := b_rpc[name(r.Name)]; ok {
 				consumed[br] = true
-				m.checkRPC(r, br)
-				emit(m.b.LeadingAndText(br))
+				emit(m.mergeRPC(r, br))
 				continue
 			}
 		}
 		emit(m.a.LeadingAndText(el))
 	}
+	a_opts := optionKeysOf(m.a, a.Decls)
 	for _, el := range b.Decls {
 		if consumed[el] {
 			continue
 		}
-		switch el.(type) {
-		case *ast.RPCNode, *ast.OptionNode:
+		switch e := el.(type) {
+		case *ast.OptionNode:
+			if !a_opts[optionKey(m.b, e)] {
+				emit(m.b.LeadingAndText(e))
+			}
+		case *ast.RPCNode:
 			emit(m.b.LeadingAndText(el))
 		}
 	}
@@ -358,6 +616,10 @@ func (m *merger) checkField(a *ast.FieldNode, bn ast.Node) {
 	}
 	an, b_num := tagVal(a.Tag), tagVal(b.Tag)
 	a_name, b_name := name(a.Name), name(b.Name)
+	if b_name == "_" {
+		// Overlay explicitly keeps the base name; not a conflict.
+		return
+	}
 	switch {
 	case an == b_num && a_name != b_name:
 		m.conflict("field-renamed", a_name, fmt.Sprintf("number %d renamed %q -> %q", an, a_name, b_name), m.a, a)
@@ -370,13 +632,56 @@ func (m *merger) checkField(a *ast.FieldNode, bn ast.Node) {
 	}
 }
 
-func (m *merger) checkRPC(a, b *ast.RPCNode) {
-	ai, bi := m.a.Text(a.Input), m.b.Text(b.Input)
-	ao, bo := m.a.Text(a.Output), m.b.Text(b.Output)
-	if ai != bi || ao != bo {
-		m.conflict("rpc-signature", name(a.Name),
-			fmt.Sprintf("%s returns %s -> %s returns %s", ai, ao, bi, bo), m.a, a)
+// overrideField renders the overlay element bn that replaces a base field named
+// a_name. If the overlay used `_` for the field name, the base name is kept and
+// only the rest of the overlay definition (type, number, options) is applied.
+func (m *merger) overrideField(a_name string, bn ast.Node) string {
+	var nm *ast.IdentNode
+	switch n := bn.(type) {
+	case *ast.FieldNode:
+		nm = n.Name
+	case *ast.MapFieldNode:
+		nm = n.Name
 	}
+	if nm == nil || nm.Val != "_" {
+		return m.b.LeadingAndText(bn)
+	}
+	s := m.b.Leading(bn) + m.b.TextReplacing(bn, nm, a_name)
+	if t := m.b.Trailing(bn); t != "" {
+		s += " " + t
+	}
+	return s
+}
+
+// mergeRPC renders the overlay rpc b overriding the base rpc a (same name). A
+// `_` request/response message name in the overlay keeps the base type; any
+// other name uses the overlay's type. The overlay's method body (or bare `;`)
+// is used.
+func (m *merger) mergeRPC(a, b *ast.RPCNode) string {
+	in := m.rpcSide(a.Input, b.Input)
+	out := m.rpcSide(a.Output, b.Output)
+	tail := ";"
+	if b.OpenBrace != nil && b.CloseBrace != nil {
+		tail = " " + m.b.Between(b.OpenBrace, b.CloseBrace)
+	}
+	return m.b.Leading(b) + "rpc " + name(b.Name) + " " + in + " returns " + out + tail
+}
+
+// rpcSide returns the source text of the chosen request/response type node: the
+// base side when the overlay used `_`, otherwise the overlay side.
+func (m *merger) rpcSide(a_type, b_type *ast.RPCTypeNode) string {
+	if b_type != nil && b_type.MessageType != nil && m.b.Text(b_type.MessageType) == "_" {
+		if a_type != nil {
+			return m.a.Text(a_type)
+		}
+	}
+	if b_type != nil {
+		return m.b.Text(b_type)
+	}
+	if a_type != nil {
+		return m.a.Text(a_type)
+	}
+	return "()"
 }
 
 func (m *merger) checkEdition() {
@@ -464,6 +769,26 @@ func packageText(f *protoast.File) string {
 	return ""
 }
 
+// optionKey identifies an option by its name (e.g. "go_package"), falling back
+// to its full text for anonymous/compact forms.
+func optionKey(f *protoast.File, o *ast.OptionNode) string {
+	if o.Name != nil {
+		return f.Text(o.Name)
+	}
+	return f.Text(o)
+}
+
+// optionKeysOf returns the set of option names declared directly in decls.
+func optionKeysOf[T ast.Node](f *protoast.File, decls []T) map[string]bool {
+	keys := map[string]bool{}
+	for _, d := range decls {
+		if o, ok := any(d).(*ast.OptionNode); ok {
+			keys[optionKey(f, o)] = true
+		}
+	}
+	return keys
+}
+
 // unionOptions collects file-level options from a then b, de-duplicated by
 // option name (not by exact text) so that a singular option set to different
 // values — or merely spaced differently — in both files collapses to one. The
@@ -477,10 +802,7 @@ func unionOptions(a, b *protoast.File) []string {
 			if !ok {
 				continue
 			}
-			key := f.Text(o)
-			if o.Name != nil {
-				key = f.Text(o.Name)
-			}
+			key := optionKey(f, o)
 			if _, seen := val[key]; !seen {
 				order = append(order, key)
 			}

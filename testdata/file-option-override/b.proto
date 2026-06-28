@@ -1,0 +1,6 @@
+// Same singular option, different value: collapses to one, overlay wins.
+option go_package = "example.com/b";
+
+message Foo {
+  string name = 2;
+}

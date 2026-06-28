@@ -1,0 +1,5 @@
+// E_A is matched by name and overridden; E_B is appended.
+enum E {
+  E_A = 5;
+  E_B = 2;
+}

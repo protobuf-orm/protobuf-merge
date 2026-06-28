@@ -1,0 +1,4 @@
+// `_` keeps the base field's name for tag 2, changing only its type.
+message Foo {
+  int64 _ = 2;
+}

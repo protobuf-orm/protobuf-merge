@@ -1,0 +1,4 @@
+// Overlay re-types field number 2; the overlay wins (and -strict rejects it).
+message Foo {
+  int64 name = 2;
+}

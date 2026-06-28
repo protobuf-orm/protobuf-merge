@@ -1,0 +1,19 @@
+edition = "2023";
+package sample;
+
+service FooService {
+  rpc Get(GetRequest) returns (GetResponseV2);
+}
+
+message GetRequest {
+  uint64 id = 1;
+}
+
+message GetResponseV2 {
+  uint64 id = 1;
+  string name = 2;
+}
+
+message GetResponse {
+  uint64 id = 1;
+}

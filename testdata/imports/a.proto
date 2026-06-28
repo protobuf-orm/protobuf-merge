@@ -1,0 +1,9 @@
+edition = "2023";
+
+package sample;
+
+import "sample/x.proto";
+
+message Foo {
+  uint64 id = 1;
+}

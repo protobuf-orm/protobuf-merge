@@ -1,0 +1,7 @@
+message Outer {
+  message Inner {
+    string name = 2;
+  }
+
+  string y = 2;
+}

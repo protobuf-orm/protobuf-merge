@@ -1,0 +1,5 @@
+message Outer {
+  enum Kind {
+    KIND_A = 1;
+  }
+}

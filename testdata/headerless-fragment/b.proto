@@ -1,0 +1,3 @@
+message Foo {
+  Bar ref = 2;
+}

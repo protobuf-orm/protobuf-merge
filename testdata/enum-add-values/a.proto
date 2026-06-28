@@ -1,0 +1,8 @@
+edition = "2023";
+
+package sample;
+
+enum Color {
+  COLOR_UNSPECIFIED = 0;
+  COLOR_RED = 1;
+}

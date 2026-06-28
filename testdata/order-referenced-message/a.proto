@@ -1,0 +1,23 @@
+edition = "2023";
+
+package sample;
+
+service S {
+  rpc Get(GetReq) returns (GetRes);
+}
+
+message GetReq {
+  uint64 id = 1;
+}
+
+message GetRes {
+  Item item = 1;
+}
+
+message Item {
+  uint64 id = 1;
+}
+
+message Unrelated {
+  uint64 id = 1;
+}

@@ -84,6 +84,22 @@ func (f *File) LeadingAndText(n ast.Node) string {
 	return s
 }
 
+// TextReplacing returns parent's source text with child's span replaced by
+// replacement. child must be a node nested within parent in this file. Used to
+// substitute a single token (e.g. swap an overlay field's `_` name for the
+// base field's name) while keeping the rest of the declaration verbatim.
+func (f *File) TextReplacing(parent, child ast.Node, replacement string) string {
+	p := f.Node.NodeInfo(parent)
+	c := f.Node.NodeInfo(child)
+	raw := p.RawText()
+	cs := c.Start().Offset - p.Start().Offset
+	ce := cs + len(c.RawText())
+	if cs < 0 || ce > len(raw) || cs > ce {
+		return strings.TrimRight(raw, " \t\r\n") // spans don't line up: leave unchanged
+	}
+	return strings.TrimRight(raw[:cs]+replacement+raw[ce:], " \t\r\n")
+}
+
 // Between returns the source slice from the start of start through the end of
 // end (both inclusive), e.g. start=MessageNode, end=its open brace yields the
 // "message Foo {" opener including any export/local visibility keyword.

@@ -1,0 +1,3 @@
+enum Color {
+  COLOR_GREEN = 2;
+}

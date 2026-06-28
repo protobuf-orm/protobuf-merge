@@ -1,0 +1,9 @@
+edition = "2023";
+package sample;
+
+option go_package = "example.com/b";
+
+message Foo {
+  uint64 id = 1;
+  string name = 2;
+}

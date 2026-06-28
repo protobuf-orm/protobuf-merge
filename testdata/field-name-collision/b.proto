@@ -1,0 +1,4 @@
+// Overlay's `a` matches base `a` by name and base `b` by number; it must not be emitted twice.
+message M {
+  string a = 2;
+}

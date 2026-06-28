@@ -1,0 +1,8 @@
+// `_` keeps the base response; only the request type changes.
+service FooService {
+  rpc Get(GetRequestV2) returns (_);
+}
+
+message GetRequestV2 {
+  string slug = 1;
+}

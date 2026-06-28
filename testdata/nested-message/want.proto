@@ -1,0 +1,11 @@
+edition = "2023";
+package sample;
+
+message Outer {
+  message Inner {
+    uint64 id = 1;
+    string name = 2;
+  }
+  uint64 x = 1;
+  string y = 2;
+}
