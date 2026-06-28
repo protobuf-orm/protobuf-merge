@@ -1,0 +1,7 @@
+edition = "2023";
+
+package sample;
+
+message User {
+  uint64 id = 1;
+}

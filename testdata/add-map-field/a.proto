@@ -1,0 +1,8 @@
+edition = "2023";
+
+package sample;
+
+message Resource {
+  uint64 id = 1;
+  string name = 2;
+}

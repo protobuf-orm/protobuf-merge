@@ -1,0 +1,31 @@
+edition = "2023";
+
+package sample;
+
+service FooService {
+  rpc FooGet(FooGetRequest) returns (FooGetResponse);
+	
+  // FooAdd insert a new Foo.
+  rpc FooAdd(FooAddRequest) returns (FooAddResponse);
+
+}
+
+message FooGetRequest {
+  uint64 id = 1;
+  // Name of the Foo to get.
+  string name = 2;
+}
+
+// FooAddRequest is the request message for FooAdd.
+message FooAddRequest {
+  // Name of the Foo to add. 
+  string name = 2;
+}
+
+message FooAddResponse {
+  uint64 id = 1;
+}
+message FooGetResponse {
+  uint64 id = 1;
+  string name = 2;
+}

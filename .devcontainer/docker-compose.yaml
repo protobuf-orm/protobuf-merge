@@ -1,0 +1,24 @@
+services:
+  dev:
+    build:
+      context: .
+    command: sleep infinity
+
+    user: "1000"
+    privileged: true
+    environment:
+      - SHELL=/bin/zsh
+
+    volumes:
+      - command.history:/commandhistory
+      - go.cache.mod:/home/hypnos/go/pkg/mod
+      - go.cache.bin:/home/hypnos/.cache/go-build
+
+      - ..:/workspace
+      - ${HOME}/workspaces:/workspaces
+      - ${HOME}/.claude:/home/hypnos/.claude
+
+volumes:
+  command.history:
+  go.cache.mod:
+  go.cache.bin:

@@ -1,0 +1,3 @@
+message Foo {
+	string name = 2;
+}

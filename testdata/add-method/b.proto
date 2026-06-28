@@ -1,0 +1,11 @@
+service FooService {
+  rpc FooAdd(FooAddRequest) returns (FooAddResponse);
+}
+
+message FooAddRequest {
+  string name = 1;
+}
+
+message FooAddResponse {
+  uint64 id = 1;
+}

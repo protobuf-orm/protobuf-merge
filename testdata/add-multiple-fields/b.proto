@@ -1,0 +1,4 @@
+message User {
+  string name = 2;
+  string email = 3;
+}

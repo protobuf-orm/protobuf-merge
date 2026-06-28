@@ -1,0 +1,19 @@
+service FooService {
+  // FooAdd insert a new Foo.
+  rpc FooAdd(FooAddRequest) returns (FooAddResponse);
+}
+
+message FooGetRequest {
+  // Name of the Foo to get.
+  string name = 2;
+}
+
+// FooAddRequest is the request message for FooAdd.
+message FooAddRequest {
+  // Name of the Foo to add. 
+  string name = 2;
+}
+
+message FooAddResponse {
+  uint64 id = 1;
+}

@@ -1,0 +1,7 @@
+message Foo {
+  string name = 2;
+}
+
+message Bar {
+  string label = 2;
+}

@@ -1,0 +1,3 @@
+message Record {
+  bytes checksum = 3 [features.field_presence = IMPLICIT];
+}

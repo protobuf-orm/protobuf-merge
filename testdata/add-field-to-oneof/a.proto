@@ -1,0 +1,10 @@
+edition = "2023";
+
+package sample;
+
+message Ref {
+  oneof key {
+    uint64 id = 1;
+    string slug = 2;
+  }
+}

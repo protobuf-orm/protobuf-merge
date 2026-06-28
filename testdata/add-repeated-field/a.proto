@@ -1,0 +1,8 @@
+edition = "2023";
+
+package sample;
+
+message Todo {
+  uint64 id = 1;
+  string title = 2;
+}

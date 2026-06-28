@@ -1,0 +1,5 @@
+message Ref {
+  oneof key {
+    string uuid = 3;
+  }
+}

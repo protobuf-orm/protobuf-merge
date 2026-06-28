@@ -1,0 +1,8 @@
+edition = "2023";
+
+package sample;
+
+message Record {
+  uint64 id = 1;
+  bytes data = 2 [features.field_presence = IMPLICIT];
+}

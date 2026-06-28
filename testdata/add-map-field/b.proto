@@ -1,0 +1,3 @@
+message Resource {
+  map<string, string> labels = 3;
+}
