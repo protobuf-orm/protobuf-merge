@@ -1,6 +1,6 @@
 module github.com/protobuf-orm/protobuf-merge
 
-go 1.26.4
+go 1.27.0
 
 require github.com/bufbuild/protocompile v0.14.2-0.20260605203730-cd7c3c124e10
 
