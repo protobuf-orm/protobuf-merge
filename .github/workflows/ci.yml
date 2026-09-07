@@ -1,0 +1,28 @@
+# A tool with one job -- merge two `.proto` files and re-emit them -- and 87
+# fixture files that say what that means. Those fixtures are the specification:
+# a golden pair per behaviour, read by the tests and by anybody asking what the
+# merge does with a `oneof`.
+#
+# There is no buf here and nothing generated, so this is the plain half of what
+# the other repositories in this stack run.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: gofmt -l . | tee /dev/stderr | (! read)
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -count=1
