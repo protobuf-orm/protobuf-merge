@@ -26,8 +26,8 @@ import (
 type Options struct {
 	// Strict makes Merge return an error when the overlay redefines a base
 	// element incompatibly (field number reused with a different name/type,
-	// rpc signature change, edition mismatch) instead of silently letting the
-	// overlay win.
+	// rpc signature change, edition mismatch, an option value both set
+	// differently) instead of silently letting one side win.
 	Strict bool
 	// Compact uses the formatter's dynamic layout (short bodies inline)
 	// instead of the default buf-compatible layout.
@@ -73,7 +73,7 @@ func Merge(a_name string, a []byte, b_name string, b []byte, opts Options) ([]by
 
 // Conflict describes an incompatible redefinition detected during the merge.
 type Conflict struct {
-	Kind   string // e.g. "field-renamed", "field-retyped", "rpc-signature", "edition"
+	Kind   string // e.g. "field-renamed", "field-retyped", "rpc-signature", "edition", "option-value"
 	Name   string // qualified element name
 	Detail string // human-readable description of A-vs-B difference
 	Pos    string // file:line:col of the A element
@@ -421,8 +421,13 @@ func (m *merger) message(a, b *ast.MessageNode) string {
 	consumed := map[ast.Node]bool{}
 	var body strings.Builder
 	emit := func(s string) { body.WriteString("\n"); body.WriteString(s) }
+	b_opts := optionsOf(m.b, b.Decls)
 
 	for _, el := range a.Decls {
+		if s, ok := m.overlayOption(name(a.Name), el, b_opts, consumed); ok {
+			emit(s)
+			continue
+		}
 		switch n := el.(type) {
 		case *ast.FieldNode:
 			if bel, ok := matchField(b_field_num, b_field_name, consumed, n.Tag, n.Name); ok {
@@ -495,8 +500,13 @@ func (m *merger) oneof(a, b *ast.OneofNode) string {
 	consumed := map[ast.Node]bool{}
 	var body strings.Builder
 	emit := func(s string) { body.WriteString("\n"); body.WriteString(s) }
+	b_opts := optionsOf(m.b, b.Decls)
 
 	for _, el := range a.Decls {
+		if s, ok := m.overlayOption(name(a.Name), el, b_opts, consumed); ok {
+			emit(s)
+			continue
+		}
 		if f, ok := el.(*ast.FieldNode); ok {
 			if bel, ok := matchField(b_field_num, b_field_name, consumed, f.Tag, f.Name); ok {
 				consumed[bel] = true
@@ -537,8 +547,13 @@ func (m *merger) enum(a, b *ast.EnumNode) string {
 	consumed := map[ast.Node]bool{}
 	var body strings.Builder
 	emit := func(s string) { body.WriteString("\n"); body.WriteString(s) }
+	b_opts := optionsOf(m.b, b.Decls)
 
 	for _, el := range a.Decls {
+		if s, ok := m.overlayOption(name(a.Name), el, b_opts, consumed); ok {
+			emit(s)
+			continue
+		}
 		if v, ok := el.(*ast.EnumValueNode); ok {
 			if bv, ok := b_val[name(v.Name)]; ok {
 				consumed[bv] = true
@@ -578,8 +593,13 @@ func (m *merger) service(a, b *ast.ServiceNode) string {
 	consumed := map[ast.Node]bool{}
 	var body strings.Builder
 	emit := func(s string) { body.WriteString("\n"); body.WriteString(s) }
+	b_opts := optionsOf(m.b, b.Decls)
 
 	for _, el := range a.Decls {
+		if s, ok := m.overlayOption(name(a.Name), el, b_opts, consumed); ok {
+			emit(s)
+			continue
+		}
 		if r, ok := el.(*ast.RPCNode); ok {
 			if br, ok := b_rpc[name(r.Name)]; ok {
 				consumed[br] = true
@@ -787,6 +807,196 @@ func optionKeysOf[T ast.Node](f *protoast.File, decls []T) map[string]bool {
 		}
 	}
 	return keys
+}
+
+// optionsOf returns the options declared directly in decls, by name.
+func optionsOf[T ast.Node](f *protoast.File, decls []T) map[string]*ast.OptionNode {
+	out := map[string]*ast.OptionNode{}
+	for _, d := range decls {
+		if o, ok := any(d).(*ast.OptionNode); ok {
+			out[optionKey(f, o)] = o
+		}
+	}
+	return out
+}
+
+// overlayOption answers the text of el when it is an option of A's that B
+// declares as well, and marks B's consumed; see mergeOption.
+func (m *merger) overlayOption(scope string, el ast.Node, b_opts map[string]*ast.OptionNode, consumed map[ast.Node]bool) (string, bool) {
+	o, ok := el.(*ast.OptionNode)
+	if !ok {
+		return "", false
+	}
+	bo, ok := b_opts[optionKey(m.a, o)]
+	if !ok {
+		return "", false
+	}
+	consumed[bo] = true
+	return m.mergeOption(scope, o, bo), true
+}
+
+// mergeOption answers the text of an option on a message, enum, oneof or
+// service that both A and B declare.
+//
+// When both values are message literals, B's is merged into A's (see
+// mergeLiteral): an overlay can then add an index to an option the base
+// declares, rather than having its whole option dropped. Any other value keeps
+// A's, and one that differs is reported, so that -strict refuses to lose it.
+func (m *merger) mergeOption(scope string, a, b *ast.OptionNode) string {
+	key := optionKey(m.a, a)
+	al, a_ok := a.Val.(*ast.MessageLiteralNode)
+	bl, b_ok := b.Val.(*ast.MessageLiteralNode)
+	if !a_ok || !b_ok {
+		m.checkValue(scope+" option "+key, a.Val, b.Val)
+		return m.a.LeadingAndText(a)
+	}
+
+	s := m.a.Leading(a) + "option " + key + " = " + m.mergeLiteral(scope+" option "+key, al, bl) + ";"
+	if t := m.a.Trailing(a); t != "" {
+		s += " " + t
+	}
+	return s
+}
+
+// mergeLiteral merges message literal b into a and answers the text.
+//
+// Fields are matched by name, in A's order, with B's new ones after. A field
+// only one side sets is kept as written. A field both set is
+//
+//   - a list when either side writes it as `[...]` or more than once: A's
+//     entries, then B's that A does not hold already;
+//   - merged recursively when both values are message literals;
+//   - otherwise A's value, with a differing one reported.
+//
+// Text alone cannot tell a repeated field from a singular one, so a repeated
+// field written as a single `name: {...}` on each side is merged as if it were
+// singular. Written as a list it is appended to.
+func (m *merger) mergeLiteral(scope string, a, b *ast.MessageLiteralNode) string {
+	a_order, a_fields := literalFields(m.a, a)
+	b_order, b_fields := literalFields(m.b, b)
+
+	var out []string
+	for _, k := range a_order {
+		as, bs := a_fields[k], b_fields[k]
+		switch {
+		case len(bs) == 0:
+			for _, el := range as {
+				out = append(out, m.a.LeadingAndText(el))
+			}
+
+		case isList(as) || isList(bs):
+			out = append(out, m.mergeList(k, as, bs))
+
+		default:
+			al, a_ok := as[0].Val.(*ast.MessageLiteralNode)
+			bl, b_ok := bs[0].Val.(*ast.MessageLiteralNode)
+			if a_ok && b_ok {
+				out = append(out, m.a.Leading(as[0])+k+": "+m.mergeLiteral(scope+"."+k, al, bl))
+				continue
+			}
+			m.checkValue(scope+"."+k, as[0].Val, bs[0].Val)
+			out = append(out, m.a.LeadingAndText(as[0]))
+		}
+	}
+	for _, k := range b_order {
+		if _, ok := a_fields[k]; ok {
+			continue
+		}
+		for _, el := range b_fields[k] {
+			out = append(out, m.b.LeadingAndText(el))
+		}
+	}
+
+	return "{\n" + strings.Join(out, "\n") + "\n}"
+}
+
+// mergeList answers a repeated field as one list: A's entries, then B's that
+// A does not hold already. Entries are compared by their structure, not their
+// text, so the same entry spaced or separated differently is still the same.
+func (m *merger) mergeList(field string, as, bs []*ast.MessageFieldNode) string {
+	seen := map[string]bool{}
+	var vals []string
+	add := func(f *protoast.File, v ast.ValueNode) {
+		k := canonical(f, v)
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		vals = append(vals, f.LeadingAndText(v))
+	}
+	for _, src := range []struct {
+		f   *protoast.File
+		els []*ast.MessageFieldNode
+	}{{m.a, as}, {m.b, bs}} {
+		for _, el := range src.els {
+			if arr, ok := el.Val.(*ast.ArrayLiteralNode); ok {
+				for _, v := range arr.Elements {
+					add(src.f, v)
+				}
+				continue
+			}
+			add(src.f, el.Val)
+		}
+	}
+
+	return field + ": [\n" + strings.Join(vals, ",\n") + "\n]"
+}
+
+// checkValue reports an option value both sides set differently; A's is the
+// one kept.
+func (m *merger) checkValue(name string, a, b ast.ValueNode) {
+	if av, bv := canonical(m.a, a), canonical(m.b, b); av != bv {
+		m.conflict("option-value", name, fmt.Sprintf("base %s, overlay %s; the base's is kept", m.a.Text(a), m.b.Text(b)), m.a, a)
+	}
+}
+
+// literalFields indexes a message literal's fields by name, keeping the order
+// names first appear in.
+func literalFields(f *protoast.File, l *ast.MessageLiteralNode) ([]string, map[string][]*ast.MessageFieldNode) {
+	var order []string
+	fields := map[string][]*ast.MessageFieldNode{}
+	for _, el := range l.Elements {
+		k := f.Text(el.Name)
+		if _, ok := fields[k]; !ok {
+			order = append(order, k)
+		}
+		fields[k] = append(fields[k], el)
+	}
+	return order, fields
+}
+
+// isList reports whether a field's entries are a list: written as `[...]`, or
+// written more than once.
+func isList(els []*ast.MessageFieldNode) bool {
+	if len(els) > 1 {
+		return true
+	}
+	if len(els) == 1 {
+		_, ok := els[0].Val.(*ast.ArrayLiteralNode)
+		return ok
+	}
+	return false
+}
+
+// canonical is a value written with its separators and spacing taken out, so
+// that two values compare equal exactly when they say the same thing.
+func canonical(f *protoast.File, v ast.ValueNode) string {
+	switch n := v.(type) {
+	case *ast.MessageLiteralNode:
+		parts := make([]string, 0, len(n.Elements))
+		for _, el := range n.Elements {
+			parts = append(parts, f.Text(el.Name)+":"+canonical(f, el.Val))
+		}
+		return "{" + strings.Join(parts, ";") + "}"
+	case *ast.ArrayLiteralNode:
+		parts := make([]string, 0, len(n.Elements))
+		for _, el := range n.Elements {
+			parts = append(parts, canonical(f, el))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	default:
+		return strings.Join(strings.Fields(f.Text(v)), " ")
+	}
 }
 
 // unionOptions collects file-level options from a then b, de-duplicated by

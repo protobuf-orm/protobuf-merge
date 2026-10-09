@@ -130,9 +130,9 @@ func TestImportedRPCTypeNotRedefined(t *testing.T) {
 // TestStrict checks which testdata cases -strict accepts and which it rejects.
 func TestStrict(t *testing.T) {
 	// Overlay incompatibly redefines a base element: -strict must fail.
-	mustError := []string{"override-field"}
+	mustError := []string{"override-field", "option-value-conflict"}
 	// Pure additions and explicit `_` overrides are intentional: -strict allows them.
-	mustPass := []string{"add-field", "two-messages", "field-underscore", "rpc-override-response"}
+	mustPass := []string{"add-field", "two-messages", "field-underscore", "rpc-override-response", "message-option-merge"}
 
 	for _, name := range mustError {
 		t.Run("reject/"+name, func(t *testing.T) {
@@ -149,5 +149,55 @@ func TestStrict(t *testing.T) {
 				t.Errorf("expected -strict to allow %q, got: %v", name, err)
 			}
 		})
+	}
+}
+
+// TestMessageOptionIsMergedNotDropped is the case that was silently wrong: an
+// overlay adding an index to an option the base already declares lost the
+// index, and -strict said nothing. The inputs and output are in
+// testdata/message-option-merge/.
+func TestMessageOptionIsMergedNotDropped(t *testing.T) {
+	a, b := readCase(t, "message-option-merge")
+	out, err := Merge("a.proto", a, "b.proto", b, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	got := string(out)
+
+	for _, want := range []string{`name: "slug"`, `name: "idp"`, "list: {size: 20}", "rpc: {crud: true}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("merged option lost %q:\n%s", want, got)
+		}
+	}
+	// The entry the overlay restated is there once.
+	if n := strings.Count(got, `name: "slug"`); n != 1 {
+		t.Errorf("slug index appears %d times:\n%s", n, got)
+	}
+	if n := strings.Count(got, "option (orm.message)"); n != 1 {
+		t.Errorf("option appears %d times:\n%s", n, got)
+	}
+}
+
+// TestAnOptionValueBothSetKeepsTheBase: the base's value is kept, as it always
+// was, and the difference is a conflict now rather than nothing at all.
+func TestAnOptionValueBothSetKeepsTheBase(t *testing.T) {
+	a, b := readCase(t, "option-value-conflict")
+	out, err := Merge("a.proto", a, "b.proto", b, Options{})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "option deprecated = false;") || !strings.Contains(got, "crud: true") {
+		t.Errorf("base's values were not kept:\n%s", got)
+	}
+
+	_, err = Merge("a.proto", a, "b.proto", b, Options{Strict: true})
+	if err == nil {
+		t.Fatal("expected -strict to report the differing values")
+	}
+	for _, want := range []string{"Foo option deprecated", "Foo option (orm.message).rpc.crud"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("-strict error does not name %q:\n%v", want, err)
+		}
 	}
 }

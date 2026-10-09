@@ -27,6 +27,7 @@ on top:
 | nested message / enum       | name              | merged recursively                                                             |
 | reserved / extension ranges | —                 | base's are preserved                                                           |
 | imports / file options      | —                 | unioned (de-duplicated; file options by name, overlay wins)                    |
+| option on a message, enum, oneof or service | name | overlay-only are appended; one both declare is **merged** when both values are message literals (see below), and otherwise keeps the base's |
 | comments                    | —                 | leading and trailing comments are preserved                                    |
 
 The overlay may be an **incomplete fragment**: it need not declare a header and
@@ -44,6 +45,22 @@ the rest:
   only its type/options. (The field is matched to the base by number.)
 
 `_`-based overrides are intentional, so `-strict` does not flag them.
+
+### Options both declare
+
+An option the base and the overlay both put on a message, enum, oneof or
+service is merged rather than one of them dropped, when both values are message
+literals — which is how an overlay adds an index to `(orm.message)`:
+
+- a field only one side sets is kept as written;
+- a list (written `[...]`, or repeated) has the overlay's entries appended, and
+  an entry the base already holds is kept once;
+- a nested message literal is merged the same way;
+- a scalar both set differently keeps the **base's** value and is reported as a
+  conflict, so `-strict` fails rather than losing it.
+
+An option whose value is not a message literal (`option deprecated = true;`)
+keeps the base's value, and a differing one is likewise reported.
 
 ### Output ordering
 
@@ -99,9 +116,14 @@ go test ./internal/merge -update
   `oneof`. An overlay field that targets a base field living inside a `oneof`
   (or vice-versa) is not cross-matched and may yield a duplicate tag.
 - Options are de-duplicated by name: a **file** option takes the overlay's value
-  on a collision (overlay wins); an option on a message/enum/oneof keeps the
-  **base's** value on a collision (base wins). The trailing comment on an
-  element's own closing `}` line is not carried over.
+  on a collision (overlay wins); an option on a message/enum/oneof/service is
+  merged as described above, keeping the **base's** value where the two set a
+  scalar differently. Text alone cannot tell a repeated field from a singular
+  one, so a repeated field written as a single `name: {...}` on each side is
+  merged as if it were singular; write it as a list to have the overlay's
+  entries appended. Comments the overlay puts on a field the base already sets
+  are not carried over. The trailing comment on an element's own closing `}`
+  line is not carried over.
 - Inputs must be valid for the resulting edition. Overlaying constructs that are
   invalid under the base's edition (e.g. proto2 `required` onto an `edition`
   file, or string `reserved` names under editions) is reported as a format

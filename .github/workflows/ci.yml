@@ -1,4 +1,4 @@
-# A tool with one job -- merge two `.proto` files and re-emit them -- and 87
+# A tool with one job -- merge two `.proto` files and re-emit them -- and 93
 # fixture files that say what that means. Those fixtures are the specification:
 # a golden pair per behaviour, read by the tests and by anybody asking what the
 # merge does with a `oneof`.
