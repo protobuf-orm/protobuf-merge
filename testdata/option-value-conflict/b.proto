@@ -1,0 +1,4 @@
+message Foo {
+  option deprecated = true;
+  option (orm.message) = {rpc: {crud: false}};
+}

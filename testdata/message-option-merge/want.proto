@@ -1,0 +1,41 @@
+edition = "2023";
+package sample;
+
+message Holder {
+  bytes id = 1;
+  string alias = 4;
+  // The base's, which an overlay adds to rather than replaces.
+  option (orm.message) = {
+    rpc: {crud: true}
+    indexes: [
+      {
+        name: "slug"
+        refs: [
+          {
+            name: "alias"
+            number: 4
+          }
+        ]
+        unique: true
+      },
+      {
+        name: "idp"
+        refs: [
+          {
+            name: "idp_issuer"
+            number: 17
+          },
+          {
+            name: "idp_subject"
+            number: 16
+          }
+        ]
+        unique: true
+      }
+    ]
+    // Only the overlay says this.
+    list: {size: 20}
+  };
+  string idp_subject = 16;
+  string idp_issuer = 17;
+}
