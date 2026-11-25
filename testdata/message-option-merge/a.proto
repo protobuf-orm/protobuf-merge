@@ -8,7 +8,7 @@ message Holder {
 
   // The base's, which an overlay adds to rather than replaces.
   option (orm.message) = {
-    rpc: {crud: true}
+    rpc: {get: {}}
     indexes: [{name: "slug", refs: [{name: "alias", number: 4}], unique: true}]
   };
 }

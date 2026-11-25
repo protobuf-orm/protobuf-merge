@@ -6,5 +6,5 @@ message Foo {
   uint64 id = 1;
 
   option deprecated = false;
-  option (orm.message) = {rpc: {crud: true}};
+  option (orm.message) = {rpc: {get: {disabled: false}}};
 }

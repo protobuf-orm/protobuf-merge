@@ -164,7 +164,7 @@ func TestMessageOptionIsMergedNotDropped(t *testing.T) {
 	}
 	got := string(out)
 
-	for _, want := range []string{`name: "slug"`, `name: "idp"`, "list: {size: 20}", "rpc: {crud: true}"} {
+	for _, want := range []string{`name: "slug"`, `name: "idp"`, "list: {size: 20}", "rpc: {get: {}}"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("merged option lost %q:\n%s", want, got)
 		}
@@ -187,7 +187,7 @@ func TestAnOptionValueBothSetKeepsTheBase(t *testing.T) {
 		t.Fatalf("Merge: %v", err)
 	}
 	got := string(out)
-	if !strings.Contains(got, "option deprecated = false;") || !strings.Contains(got, "crud: true") {
+	if !strings.Contains(got, "option deprecated = false;") || !strings.Contains(got, "get: {disabled: false}") {
 		t.Errorf("base's values were not kept:\n%s", got)
 	}
 
@@ -195,7 +195,7 @@ func TestAnOptionValueBothSetKeepsTheBase(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected -strict to report the differing values")
 	}
-	for _, want := range []string{"Foo option deprecated", "Foo option (orm.message).rpc.crud"} {
+	for _, want := range []string{"Foo option deprecated", "Foo option (orm.message).rpc.get.disabled"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("-strict error does not name %q:\n%v", want, err)
 		}
