@@ -6,7 +6,7 @@ message Holder {
   string alias = 4;
   // The base's, which an overlay adds to rather than replaces.
   option (orm.message) = {
-    rpc: {crud: true}
+    rpc: {get: {}}
     indexes: [
       {
         name: "slug"

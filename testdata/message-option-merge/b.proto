@@ -4,7 +4,7 @@ message Holder {
 
   option (orm.message) = {
     // Restated as the base has it: kept once.
-    rpc: {crud: true}
+    rpc: {get: {}}
     indexes: [
       {name: "slug", refs: [{name: "alias", number: 4}], unique: true},
       {name: "idp", refs: [{name: "idp_issuer", number: 17}, {name: "idp_subject", number: 16}], unique: true}
